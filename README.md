@@ -1,2 +1,2 @@
 # RedisLoader
-Implementating transfer of dictionary-based loader within "uois" to equivalent structure compatible with Redis
+Implementing transfer of dictionary-based loaders within "uois" to equivalent structure compatible with Redis
