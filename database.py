@@ -6,123 +6,30 @@ from redis_dict import RedisDict
 
 from aiodataloader import DataLoader
 
-import sqlalchemy
-from sqlalchemy import (Column,String,DateTime,Uuid,Boolean,Date)
 
-from sqlalchemy.ext.declarative import declarative_base
-from uuid import uuid4, UUID
-from sqlalchemy import Column, Uuid
-uuid = uuid4
-
-
-def UUIDColumn():
-
-    return Column(
-        Uuid, primary_key=True, default=uuid
-    )
-
-
-def UUIDFKey(comment = None, nullable=True, **kwargs):
-    
-    return Column(
-        Uuid, index=True, nullable=nullable, **kwargs
-    )
-BaseModel = declarative_base()
-
-
-class PublicationModel(BaseModel):
-
-    """
-    Represents a Publication entity in the database
-    """
-
-    __tablename__ = "publications"
-
-    id = UUIDColumn()
-    name = Column(String)
-    published_date = Column(DateTime)
-    reference = Column(String)
-    valid = Column(Boolean)
-    place = Column(String)
-
-    publication_type_id = UUIDFKey(nullable=True, comment="ID of the publication type")#Column(Uuid, index=True)
-
-    created = Column(DateTime, server_default=sqlalchemy.sql.func.now())
-    lastchange = Column(DateTime, server_default=sqlalchemy.sql.func.now())
-    createdby = UUIDFKey(nullable=True, comment="who's created the entity")#Column(ForeignKey("users.id"), index=True, nullable=True)
-    changedby = UUIDFKey(nullable=True, comment="who's changed the entity")#Column(ForeignKey("users.id"), index=True, nullable=True)
-    rbacobject = UUIDFKey(nullable=True, comment="user or group id, determines access")
+from serialize import *
 
 #######################################################################
-################## Serialization and deserialization ##################
-#######################################################################
-
-
-def serialize(dbModel):
-    """ 
-    Funkce umožňující serializaci(dbModel představuje hodnotu třídy)
-    """
-    result = {}
-    for name in dir(dbModel):
-        if name.startswith("_"):
-            continue
-        value = getattr(dbModel, name)
-        if value is not None:
-            result[name]=value
-
-    return result
-
-def deserialize_from_str(data):
-    jsondata=json.loads(data)
-    result = PublicationModel(**jsondata)
-
-    return result
-
-def serialize_to_str(dbModel):
-    jsondata=serialize(dbModel)
-    result=json.dumps(jsondata)
-
-    return result
-
-#######################################################################
-##################  Insert data as using redis-dict####################
-######################### ...as one string ############################
+##################  Insert data using redis-dict ######################
 #######################################################################
 
 
 
-def cache_dict(path, redis_dict):
-    # Load the contents of the file into a dictionary
+def cache_dict(path, redis_dict, model):
+    """Cache data from a JSON file into Redis using a specified SQLAlchemy model."""
     with open(path, encoding='utf-8') as f:
         data = json.load(f)
 
-    # Separate Publication data and select the first publication
-    publications = data["publications"]
-    publication = publications[0]
+    entities = data[model.__tablename__]
 
-    # Create publication class instance
-    publicationobj=PublicationModel(**publication)
-    print(publicationobj)
-    print(serialize(publicationobj))
-    #publication["created"]=datetime.datetime.now()
+    redis_dict.transform[model.__name__] = lambda x: deserialize_from_str(model, x)
+    redis_dict.pre_transform[model.__name__] = lambda obj: serialize_to_str(model, obj)
 
-    # Create a RedisDict instance
-    redis_dict = RedisDict(host='localhost', port=6379, db=0)
+    for entity_data in entities:
+        entity = model(**entity_data)
+        redis_dict[str(entity.id)] = entity
+        print(f"Cached entity {model.__tablename__}:", serialize(entity))
 
-    # 
-    redis_dict.transform[type(PublicationModel).__name__]=deserialize_from_str
-    redis_dict.pre_transform[type(PublicationModel).__name__]=serialize_to_str
-
-    # Store the JSON string in Redis
-    #redis_dict['data'] = json_data
-    #redis_dict[user["id"]]=json.dumps(user)
-    #redis_dict[publication["id"]]=(publication)
-    #entitystr=redis_dict[publication["id"]]
-    redis_dict[publicationobj.id]=(publicationobj)
-    entitymodel=redis_dict[publicationobj.id]
-    #entity=json.loads(entitystr)
-    entity=(entitymodel)
-    print(entity)
 
 class RedisLoader(DataLoader):
     def __init__(self, redis_dict):
@@ -134,25 +41,25 @@ class RedisLoader(DataLoader):
         return results
 
 
-async def cache_dict_async(path, redis_dict):
-    with open(path, encoding='utf-8') as f:
-        data = json.load(f)
-    publications = data["publications"]
-    publication = publications[0]
-    publicationobj = PublicationModel(**publication)
-
-    print(publicationobj)
-    print(serialize(publicationobj))
-
-    redis_dict.transform[type(PublicationModel).__name__] = deserialize_from_str
-    redis_dict.pre_transform[type(PublicationModel).__name__] = serialize_to_str
+async def cache_dict_async(path, redis_dict, *models):
+    with open(path, encoding='utf-8') as file:
+        data = json.load(file)
 
     redis_loader = RedisLoader(redis_dict)
 
-    await redis_loader.load(str(publicationobj.id))
+    ids = []
 
-    redis_dict[str(publicationobj.id)] = publicationobj
-    entitymodel = await redis_loader.load(str(publicationobj.id))
-    entity = entitymodel
+    for model in models:
+        entities = data[model.__tablename__]
 
-    print(entity)
+        for entity in entities:
+            entity_obj = model(**entity)
+            redis_dict[str(entity_obj.id)] = entity_obj
+            ids.append(str(entity_obj.id))
+
+            #print(f"Cached entity {model.__tablename__}: {serialize(entity_obj)}")
+
+    entities = await redis_loader.load_many(ids)
+
+    for entity in entities:
+        print(entity)
